@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"fmt"
 	"go/ast"
 	"go/build"
 	"go/importer"
@@ -63,8 +64,7 @@ func NewFileSet(names []string) (*FileSet, error) {
 		Files: names,
 	}
 
-	return fs.Parse()
-
+	return fs.ParseFiles()
 }
 
 // FileSetFromDir creates a FileSet consisting of the Go source files
@@ -87,14 +87,29 @@ func FileSetFromDir(d string) (*FileSet, error) {
 		fs.Files[i] = filepath.Join(d, f)
 	}
 
+	return fs.ParseFiles()
+}
+
+// FileSetFromDir creates a FileSet consisting of the Go source texts
+// supplied as strings
+func NewFileSetFromTexts(texts ...string) (*FileSet, error) {
+	fs := &FileSet{
+		Dir:     currentDir,
+		FileSet: token.NewFileSet(),
+	}
+
+	for i, text := range texts {
+		p, err := parser.ParseFile(fs.FileSet, fmt.Sprintf("%d.go", i), text, 0)
+		if err != nil {
+			return nil, err
+		}
+		fs.AstFiles = append(fs.AstFiles, p)
+	}
+
 	return fs.Parse()
 }
 
-// Parse verifies whether fs represents a valid, compilable set of Go
-// source files and sets the parsed versions of each file in the fileset.
-func (fs *FileSet) Parse() (*FileSet, error) {
-	var err error
-
+func (fs *FileSet) ParseFiles() (*FileSet, error) {
 	fs.FileSet = token.NewFileSet()
 	for _, f := range fs.Files {
 		p, err := parser.ParseFile(fs.FileSet, f, nil, 0)
@@ -103,6 +118,14 @@ func (fs *FileSet) Parse() (*FileSet, error) {
 		}
 		fs.AstFiles = append(fs.AstFiles, p)
 	}
+
+	return fs.Parse()
+}
+
+// Parse verifies whether fs represents a valid, compilable set of Go
+// source files and sets the parsed versions of each file in the fileset.
+func (fs *FileSet) Parse() (*FileSet, error) {
+	var err error
 
 	config := types.Config{Importer: importer.Default()}
 	fs.TypeInfo = &types.Info{
@@ -136,4 +159,82 @@ func (fs *FileSet) Inspect(f func(ast.Node) bool) {
 	for _, astFile := range fs.AstFiles {
 		ast.Inspect(astFile, f)
 	}
+}
+
+// EachType traverses all the files in fs calling f for each type found.
+func (fs *FileSet) EachType(f func(*ast.TypeSpec) bool) {
+	done := false
+	fs.Inspect(func(node ast.Node) bool {
+		if done {
+			return false
+		}
+		if ts, ok := node.(*ast.TypeSpec); ok {
+			done = !f(ts)
+			return true
+		}
+		return true
+	})
+}
+
+// EachConst traverses all the files in fs calling f for each constant declaration found.
+func (fs *FileSet) EachConst(f func(*ast.ValueSpec) bool) {
+	done := false
+	fs.Inspect(func(node ast.Node) bool {
+		if done {
+			return false
+		}
+		if ts, ok := node.(*ast.GenDecl); ok && ts.Tok == token.CONST {
+			for _, spec := range ts.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					if !f(vs) {
+						done = true
+						return false
+					}
+				}
+			}
+			return true
+		}
+		return true
+	})
+}
+
+// EachVar traverses all the files in fs calling f for each variable declaration found. The traversal
+// will stop if f returns false.
+func (fs *FileSet) EachVar(f func(*ast.ValueSpec) bool) {
+	done := false
+	fs.Inspect(func(node ast.Node) bool {
+		if done {
+			return false
+		}
+		if ts, ok := node.(*ast.GenDecl); ok && ts.Tok == token.VAR {
+			for _, spec := range ts.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					if !f(vs) {
+						done = true
+						return false
+					}
+				}
+			}
+			return true
+		}
+		return true
+	})
+}
+
+// EachFunc traverses all the files in fs calling f for each function declaration found. The traversal
+// will stop if f returns false.
+func (fs *FileSet) EachFunc(f func(*ast.FuncDecl) bool) {
+	done := false
+	fs.Inspect(func(node ast.Node) bool {
+		if done {
+			return false
+		}
+		if decl, ok := node.(*ast.FuncDecl); ok {
+			if !f(decl) {
+				done = true
+				return false
+			}
+		}
+		return true
+	})
 }
